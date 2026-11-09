@@ -1,0 +1,4 @@
+interface:
+  display_name: "大肥鱼桌宠"
+  short_description: "把蓝色大肥鱼装进 Codex 的原生宠物栏，并让她随工作状态切换动作。"
+  default_prompt: "把我的大肥鱼装到 Codex 里，并让她在我工作时动起来。"

@@ -1,0 +1,38 @@
+{
+  "name": "fatfish-pet",
+  "version": "1.0.0",
+  "description": "蓝色大肥鱼桌宠：把「蓝毛小女仆」装进 Codex 的原生宠物栏（Native Pet Window），并教 Codex 用 update_running_summary 驱动她的工作状态。\n\nAliases: @fatfish-pet, @大肥鱼, fatfish, 大肥鱼桌宠, whale pet.\n\nUse this plugin when the user asks to install/enable the blue whale-girl desktop companion in Codex, or wants the Codex pet to reflect what it is doing right now (thinking / working / waiting / done).",
+  "author": {
+    "name": "fatfish-pet contributors"
+  },
+  "license": "MIT",
+  "keywords": [
+    "pet",
+    "companion",
+    "whale",
+    "deepseek",
+    "codex",
+    "desktop-pet"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "大肥鱼桌宠",
+    "shortDescription": "把蓝色大肥鱼装进 Codex 原生宠物栏",
+    "longDescription": "大肥鱼桌宠为 Codex 桌面版提供一只可自定义的原生宠物：蓝发女仆「蓝毛小女仆」，由 11 组动画组成（待机、左右跑、挥手、跳跃、失败、等待、工作、整理、跳舞、睡觉），渲染在 Codex 自己的透明置顶宠物窗里，随模型工作状态切换。安装脚本把宠物资源写入 ~/.codex/pets/，Codex 会在「设置 → 宠物」里认出它。",
+    "developerName": "fatfish-pet contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/PC2005-cloud/dsh-pet",
+    "defaultPrompt": [
+      "把我的大肥鱼装到 Codex 里",
+      "让大肥鱼在我工作的时候动起来"
+    ],
+    "brandColor": "#1b3a6b",
+    "composerIcon": "./assets/composer-icon.png",
+    "logo": "./assets/logo.png",
+    "screenshots": []
+  },
+  "bundledContentVariant": "unified"
+}

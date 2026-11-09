@@ -1,0 +1,151 @@
+"""
+把 dsh-pet 的透明动画序列转换成 Codex 原生宠物 spritesheet。
+
+Codex 宠物规格（从 Codex 桌面版 asar 反推确认）：
+  v2: 1536x2288, 8 列 x 11 行, 每格 192x208
+  v1: 1536x1872, 8 列 x 9 行,  每格 192x208
+  动画按行分配（requiredFramesByRow / y7i 映射）：
+    row0 idle(6) row1 running-right(8) row2 running-left(8) row3 waving(4)
+    row4 jumping(5) row5 failed(8) row6 waiting(6) row7 running(6) row8 review(6)
+    row9(8) row10(8) 为备用行
+"""
+import json
+import os
+import sys
+
+from PIL import Image
+from opencc import OpenCC
+
+ASSETS = os.environ.get('FATFISH_ASSETS') or r'E:\真。摸鱼\dsh-whale\pet\assets'
+WEBMS = os.environ.get('FATFISH_WEBMS') or r'E:\真。摸鱼\dsh-whale\dsh-pet\dsh-pet\assets\webm'
+OUT = sys.argv[1] if len(sys.argv) > 1 else r'E:\真。摸鱼\codex改\_tools\out'
+
+COLS, ROWS = 8, 11
+CELL_W, CELL_H = 192, 208
+SHEET_W, SHEET_H = COLS * CELL_W, ROWS * CELL_H   # 1536 x 2288
+TARGET_CHAR_H = 190          # 角色高度（格内）
+FOOT_BOTTOM = 205            # 角色脚底 Y（格内，下留 3px）
+CENTER_X = CELL_W // 2       # 角色中心 X（格内）
+
+# 行 -> (Codex 动画名, 需要的帧数, dsh-pet 动画名)
+ROWS_MAP = [
+    ('idle',          6, '待机呼吸休闲', False),
+    ('running-right', 8, '螃蟹走路', True),      # flip=True：素材本身朝左，翻转成朝右
+    ('running-left',  8, '螃蟹走路', False),     # 与 row1 严格镜像，符合 Codex 左右跑语义
+    ('waving',        4, '点击回应-元气挥手', False),
+    ('jumping',       5, '点击回应-开心跃动', False),
+    ('failed',        8, '工作状态-垂头叹气冒汗', False),
+    ('waiting',       6, '工作状态-原地踱步张望', False),
+    ('running',       6, '工作状态-忙碌点按', False),
+    ('review',        6, '工作状态-清点归档', False),
+    ('extra-dance',   8, '优雅女仆舞', False),
+    ('extra-sleep',   8, '原地小憩沉眠', False),
+]
+
+cc = OpenCC('s2t')
+index = json.load(open(os.path.join(ASSETS, 'webm_index_tw.json'), encoding='utf-8'))
+
+
+def resolve_dir(cn_name):
+    """简体动画名 -> anim_full 下的拼音目录名。"""
+    tw = cc.convert(cn_name)
+    if tw in index:
+        return index[tw]
+    # 宽松回退：忽略标点/空格比较
+    def norm(s):
+        return ''.join(ch for ch in s if ch.isalnum())
+    target = norm(tw)
+    for k, v in index.items():
+        if norm(k) == target:
+            return v
+    return None
+
+
+def sample_indices(total, want):
+    """在 total 帧的循环里均匀取 want 帧（不取尾帧，避免与首帧重复）。"""
+    if total <= 0:
+        return []
+    if want >= total:
+        return list(range(total))
+    return [min(total - 1, int(round(i * total / want))) for i in range(want)]
+
+
+def load_frames(dirname, count):
+    """从 sheet.webp 取指定数量的帧（RGBA）。"""
+    d = os.path.join(ASSETS, 'anim_full', dirname)
+    meta = json.load(open(os.path.join(d, 'meta.json'), encoding='utf-8'))
+    sheet = Image.open(os.path.join(d, meta.get('sheet', 'sheet.webp'))).convert('RGBA')
+    fw, fh = meta['frame_w'], meta['frame_h']
+    cols = meta.get('cols') or int(sheet.width // fw)
+    total = meta['frames']
+    idxs = sample_indices(total, count)
+    out = []
+    for i in idxs:
+        cx, cy = (i % cols) * fw, (i // cols) * fh
+        out.append(sheet.crop((cx, cy, cx + fw, cy + fh)).copy())
+    sheet.close()
+    return out, meta
+
+
+def place(frame, meta, flip=False):
+    """把一帧按角色基准缩放并贴进 192x208 格子。"""
+    ch = meta.get('char_h') or 248
+    cx = meta.get('canvas_cx')
+    feet = meta.get('canvas_feet')
+    if cx is None or feet is None:
+        return None
+    s = TARGET_CHAR_H / ch
+    fw = frame.width
+    fh = frame.height
+    nw, nh = max(1, round(fw * s)), max(1, round(fh * s))
+    im = frame.resize((nw, nh), Image.LANCZOS)
+    if flip:
+        im = im.transpose(Image.FLIP_LEFT_RIGHT)
+        cx = fw - cx
+    cell = Image.new('RGBA', (CELL_W, CELL_H), (0, 0, 0, 0))
+    dx = round(CENTER_X - cx * s)
+    dy = round(FOOT_BOTTOM - feet * s)
+    cell.alpha_composite(im, (dx, dy)) if dx >= 0 and dy >= 0 else cell.paste(im, (dx, dy), im)
+    return cell
+
+
+def main():
+    os.makedirs(OUT, exist_ok=True)
+    sheet = Image.new('RGBA', (SHEET_W, SHEET_H), (0, 0, 0, 0))
+    report = []
+    for r, (anim, count, src, flip) in enumerate(ROWS_MAP):
+        dirname = resolve_dir(src)
+        if not dirname:
+            report.append((r, anim, src, 'MISSING-NAME', ''))
+            continue
+        d = os.path.join(ASSETS, 'anim_full', dirname)
+        if not os.path.isdir(d):
+            report.append((r, anim, src, 'MISSING-DIR', dirname))
+            continue
+        try:
+            frames, meta = load_frames(dirname, count)
+        except Exception as e:
+            report.append((r, anim, src, 'ERROR', repr(e)))
+            continue
+        # 角色朝向：running-right 用镜像保证朝右，running-left 保持原样（两者严格镜像）
+        for c, fr in enumerate(frames):
+            cell = place(fr, meta, flip)
+            if cell is None:
+                continue
+            sheet.alpha_composite(cell, (c * CELL_W, r * CELL_H))
+        report.append((r, anim, src, 'OK', f'{dirname} frames={len(frames)}'))
+        print(f'row {r:2d}  {anim:14s} <- {src}  ({dirname})')
+
+    out_img = os.path.join(OUT, 'spritesheet.webp')
+    sheet.save(out_img, 'WEBP', lossless=True, quality=100, method=6)
+    size = os.path.getsize(out_img)
+    print(f'\nspritesheet -> {out_img}')
+    print(f'size {sheet.width}x{sheet.height}, {size/1024/1024:.2f} MiB (limit 20 MiB)')
+    if size > 20 * 1024 * 1024:
+        print('!! OVER 20MiB LIMIT — need lossy or fewer frames')
+    json.dump(report, open(os.path.join(OUT, 'build-report.json'), 'w', encoding='utf-8'),
+              ensure_ascii=False, indent=1)
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,173 @@
+#!/usr/bin/env node
+/**
+ * 大肥鱼桌宠 —— 一键安装（宠物资源 + Codex 插件市场注册）
+ *
+ * 跨平台（Windows / macOS / Linux），纯 Node，无外部依赖。
+ *
+ * 用法：
+ *   node install.mjs            # 安装宠物 + 注册插件市场 + 启用插件（推荐）
+ *   node install.mjs --pet-only # 只安装宠物资源，不动 config.toml
+ *   node install.mjs --status   # 查看当前状态
+ *   node install.mjs --uninstall # 移除宠物（config.toml 里的注册项保留）
+ *
+ * 环境变量：
+ *   CODEX_HOME   Codex 主目录，默认 ~/.codex
+ */
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync, copyFileSync, rmSync } from 'node:fs'
+import { join, dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const PLUGIN_ROOT = resolve(HERE, '..')          // plugins/<name>/
+const MARKETPLACE_ROOT = resolve(HERE, '..', '..', '..')  // marketplace 根
+const PET_SRC = join(PLUGIN_ROOT, 'pet')
+
+const SLUG = 'fatfish-girl'
+const MARKETPLACE_NAME = 'fatfish-pet-local'
+const PLUGIN_NAME = 'fatfish-pet'
+const CODEX_HOME = process.env.CODEX_HOME || join(process.env.USERPROFILE || process.env.HOME || '.', '.codex')
+const PETS_DIR = join(CODEX_HOME, 'pets')
+const TARGET = join(PETS_DIR, SLUG)
+const CONFIG = join(CODEX_HOME, 'config.toml')
+
+function log(...a) { console.log('[fatfish-pet]', ...a) }
+
+/* ---------------- 精灵图尺寸读取（不整图解码） ---------------- */
+function readPngOrWebpSize(buf) {
+  if (buf.length < 30) return null
+  if (buf.readUInt32BE(0) === 0x89504e47) return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) }
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
+    const tag = buf.toString('ascii', 12, 16)
+    if (tag === 'VP8X') return { w: (buf.readUIntLE(24, 3) & 0xffffff) + 1, h: (buf.readUIntLE(27, 3) & 0xffffff) + 1 }
+    if (tag === 'VP8 ') return { w: buf.readUInt16LE(26) & 0x3fff, h: buf.readUInt16LE(28) & 0x3fff }
+    if (tag === 'VP8L') { const b = buf.readUInt32LE(21); return { w: (b & 0x3fff) + 1, h: ((b >> 14) & 0x3fff) + 1 } }
+  }
+  return null
+}
+
+/* ---------------- 安装宠物资源 ---------------- */
+function installPet() {
+  const petFile = join(PET_SRC, 'pet.json')
+  if (!existsSync(petFile)) throw new Error(`插件资源不完整：缺少 ${petFile}`)
+  const pet = JSON.parse(readFileSync(petFile, 'utf8'))
+  const sheetName = pet.spritesheetPath || 'spritesheet.webp'
+  const sheet = join(PET_SRC, sheetName)
+  if (!existsSync(sheet)) throw new Error(`插件资源不完整：缺少 ${sheet}`)
+
+  const buf = readFileSync(sheet)
+  const dim = readPngOrWebpSize(buf)
+  if (dim) {
+    log('精灵图尺寸:', `${dim.w}x${dim.h}`)
+    if (dim.w !== 1536) throw new Error(`精灵图宽度必须是 1536，实际 ${dim.w}`)
+    const expect = pet.spriteVersionNumber === 2 ? 2288 : 1872
+    if (dim.h !== expect) throw new Error(`精灵图高度必须是 ${expect}（v${pet.spriteVersionNumber}），实际 ${dim.h}`)
+  } else {
+    log('警告：无法读取精灵图尺寸（仍继续安装）')
+  }
+  if (buf.length > 20 * 1024 * 1024) throw new Error('精灵图超过 20 MiB 上限')
+
+  mkdirSync(TARGET, { recursive: true })
+  writeFileSync(join(TARGET, 'pet.json'), JSON.stringify(pet, null, 2) + '\n', 'utf8')
+  copyFileSync(sheet, join(TARGET, sheetName))
+  log('✅ 宠物已安装:', TARGET)
+  log('   宠物 id:', `custom:${SLUG}`, '| 显示名:', pet.displayName)
+}
+
+/* ---------------- 注册本地 marketplace + 启用插件 ---------------- */
+function stripSection(toml, header) {
+  // 删掉某个 [header] 段落（含其下的键，直到下一个 [ 段落）
+  const lines = toml.split(/\r?\n/)
+  const out = []
+  let skipping = false
+  for (const line of lines) {
+    const t = line.trim()
+    if (t.startsWith('[')) {
+      skipping = (t === header)
+      if (skipping) continue
+    }
+    if (!skipping) out.push(line)
+  }
+  return out.join('\n')
+}
+
+function registerMarketplace() {
+  const mpJson = join(MARKETPLACE_ROOT, '.agents', 'plugins', 'marketplace.json')
+  if (!existsSync(mpJson)) {
+    log('⚠️ 找不到 marketplace 清单:', mpJson, '——跳过注册（插件仍需手动启用）')
+    return
+  }
+  const mp = JSON.parse(readFileSync(mpJson, 'utf8'))
+  const mpName = mp.name || MARKETPLACE_NAME
+  const entry = (mp.plugins || []).find(p => p.name === PLUGIN_NAME)
+  if (!entry) {
+    log('⚠️ marketplace 清单里没有', PLUGIN_NAME, '——跳过注册')
+    return
+  }
+
+  let toml = existsSync(CONFIG) ? readFileSync(CONFIG, 'utf8') : ''
+  // 先移除旧段落，保证重复安装不会写重
+  toml = stripSection(toml, `[marketplaces.${mpName}]`)
+  toml = stripSection(toml, `[plugins."${PLUGIN_NAME}@${mpName}"]`)
+
+  const block = [
+    '',
+    `# ===== ${PLUGIN_NAME}（由 install.mjs 写入：本地插件市场 + 启用）=====`,
+    `[marketplaces.${mpName}]`,
+    'source_type = "local"',
+    // TOML basic string（双引号）：Windows 路径里的反斜杠必须转义，
+    // 用 JSON.stringify 生成的内容与 TOML basic string 的转义规则兼容。
+    `source = ${JSON.stringify(MARKETPLACE_ROOT)}`,
+    '',
+    `[plugins."${PLUGIN_NAME}@${mpName}"]`,
+    'enabled = true',
+    '',
+  ].join('\n')
+
+  mkdirSync(CODEX_HOME, { recursive: true })
+  writeFileSync(CONFIG, toml.replace(/\s*$/, '\n') + block, 'utf8')
+  log('✅ 已注册本地插件市场并启用插件')
+  log('   marketplace:', mpName)
+  log('   源目录     :', MARKETPLACE_ROOT)
+  log('   config.toml:', CONFIG)
+}
+
+function status() {
+  log('CODEX_HOME :', CODEX_HOME)
+  log('市场源目录 :', MARKETPLACE_ROOT)
+  if (existsSync(TARGET)) {
+    for (const f of ['pet.json', 'spritesheet.webp']) {
+      const p = join(TARGET, f)
+      log('  ', f, existsSync(p) ? `OK (${(statSync(p).size / 1024).toFixed(1)} KiB)` : '缺失')
+    }
+  } else log('   宠物尚未安装')
+  if (existsSync(CONFIG)) {
+    const t = readFileSync(CONFIG, 'utf8')
+    log('   config.toml 含本插件注册:', t.includes(MARKETPLACE_NAME) ? '是' : '否')
+  }
+}
+
+function uninstall() {
+  if (existsSync(TARGET)) {
+    rmSync(TARGET, { recursive: true, force: true })
+    log('已移除宠物:', TARGET)
+  } else log('宠物未安装')
+}
+
+const arg = process.argv[2] || ''
+try {
+  if (arg === '--status' || arg === 'status') status()
+  else if (arg === '--uninstall' || arg === 'uninstall') uninstall()
+  else if (arg === '--pet-only') installPet()
+  else {
+    installPet()
+    registerMarketplace()
+    log('')
+    log('接下来请在 Codex 里：')
+    log('  1) 设置 → 宠物（Pets）→ 选中「蓝毛小女仆」并启用')
+    log('  2) 完全退出 Codex 客户端（含系统托盘）再重新打开')
+    log('  3) 之后她就会住在 Codex 的原生透明置顶窗里')
+  }
+} catch (e) {
+  console.error('[fatfish-pet] 安装失败:', e.message)
+  process.exitCode = 1
+}

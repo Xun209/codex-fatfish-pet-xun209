@@ -1,0 +1,109 @@
+# Codex 原生宠物规格（逆向整理）
+
+> 来源：Codex 桌面版 `app.asar`（v26.1027.3384.0）内的实现与 i18n 文案。
+> 整理日期：2026-11-01。改精灵图前请先读这份。
+
+## 1. 宠物目录与清单
+
+```
+<CODEX_HOME>/pets/<slug>/
+├── pet.json
+└── spritesheet.webp
+```
+
+`CODEX_HOME` 默认 `~/.codex`。
+
+`pet.json`（zod schema）：
+
+```jsonc
+{
+  "id": "custom:<slug>",          // 可选；本地安装时由 Codex 自行补全
+  "displayName": "蓝毛小女仆",     // 可选
+  "description": "…",             // 可选（nullish，会 trim）
+  "spriteVersionNumber": 2,       // 1 | 2，默认 1
+  "spritesheetPath": "spritesheet.webp"  // 相对本目录，默认 spritesheet.webp
+}
+```
+
+读取时宠物 id 形如 `custom:<slug>`（本地）或 `pet_<…>`（云端安装）。
+
+## 2. 精灵图硬性规格
+
+| 项 | v1 | v2 |
+|---|---|---|
+| 宽 | **1536** | **1536** |
+| 高 | **1872** | **2288** |
+| 网格 | 8 列 × **9** 行 | 8 列 × **11** 行 |
+| 单格 | 192 × 208 | 192 × 208 |
+| 每行帧数 | `[6,8,8,4,5,8,6,6,6]` | `[6,8,8,4,5,8,6,6,6,8,8]` |
+| 合计必需帧 | 57 | 73 |
+| 背景 | 必须透明 | 必须透明 |
+| 格式 | PNG / WebP | PNG / WebP |
+| 体积 | ≤ 20 MiB | ≤ 20 MiB |
+
+> 校验逻辑：宽必须等于 1536，高必须等于上表对应值，否则判为「spritesheet is invalid」。
+
+## 3. 动画 → 行 的固定映射
+
+```js
+{
+  idle:           { row: 0, count: 6 },  // 待机呼吸
+  "running-right":{ row: 1, count: 8 },  // 向右跑
+  "running-left": { row: 2, count: 8 },  // 向左跑
+  waving:         { row: 3, count: 4 },  // 挥手
+  jumping:        { row: 4, count: 5 },  // 跳跃（鼠标悬停触发）
+  failed:         { row: 5, count: 8 },  // 失败
+  waiting:        { row: 6, count: 6 },  // 等待
+  running:        { row: 7, count: 6 },  // 工作中
+  review:         { row: 8, count: 6 },  // 整理归档
+}
+```
+
+v2 的第 9、10 行各 8 帧为**备用行**（当前未被任何动画引用，但必须存在）。
+
+## 4. 渲染方式
+
+CSS background 定位，**不切图**：
+
+```js
+backgroundSize:     `${columns * 100}% ${rows * 100}%`      // → 800% 1100%
+backgroundPosition: `${col / (columns - 1) * 100}% ${row / (rows - 1) * 100}%`
+```
+
+所以单格必须严格 192×208，否则帧会错位。
+
+## 5. 帧时长
+
+idle（row 0）基础时长 `280 / 110 / 110 / 140 / 140 / 320` ms，播放时整体 ×6。
+其余行：普通帧 120–150 ms，末帧 220–280 ms。
+
+非 idle 动画播放三遍后接 idle 循环。
+
+## 6. Agent 驱动：update_running_summary
+
+Codex 用 `update_running_summary`（`codex_app` 命名空间）驱动宠物旁的**活动条**：
+
+```json
+{ "summary": "gpt-5.5 · 5h 剩 93% · 周 剩 99%" }
+```
+
+约束：**1–50 字符、单行**（`/^[^\r\n]+$/`）。
+Codex 约定：开始实质工作前调用一次，只在高层阶段变化时更新，简短问答不调用，不要定时更新。
+
+## 7. 内置宠物（参考样例）
+
+`codex` / `dewey` / `fireball` / `hoots` / `rocky` / `seedy` / `stacky` / `bsod` / `null-signal`
+共 9 只，全部为 v2，精灵图位于 `app.asar` 的 `webview/assets/*.webp`。
+
+Codex 官方角色是大头 Q 版（角色几乎填满 192×208 单格）。
+
+## 8. 本插件的做法
+
+素材来自 `dsh-pet` 的全身透明动画（640×360），经 `tools/build-spritesheet.py` 处理：
+
+1. 取 `anim_full/<拼音>/sheet.webp` 中按时间均匀采样的 N 帧
+2. 用 `meta.json` 的 `canvas_cx` / `canvas_feet` / `char_h` 把角色缩放对齐到
+   单格内（角色高 190，脚底 Y=205，中心 X=96）
+3. 按第 3 节的行分配填入 8×11 网格，输出 1536×2288 WebP
+
+因为源素材是全身立绘而非 Codex 那种大头 Q 版，缩进单格后角色会比内置宠物小一些。
